@@ -50,6 +50,11 @@ folder. It uses no network and edits no layout.
 
 ## How it behaves
 
+Everything works the same in a space on another machine (`hc machine ls`):
+micro runs there, and the tree, git marks, picker and viewer read that
+machine's files. The viewer fetches images and PDF pages from there, and
+`Open` fetches the file and opens it here.
+
 - **ctrl-alt-m** (`mod.open:herdr-micro`) toggles the focused tab's pair.
   - Opening it the first time starts `micro` in the tab's git repo (the
     focused terminal's folder, else the tab's first terminal's folder; the
@@ -115,7 +120,10 @@ folder. It uses no network and edits no layout.
     do the rest;
   - the tab's micro is the live terminal in `terminals()` labelled
     `herdr-micro.tab=<tab>`. Panes are found in `panes()` by `mod` and
-    `tab`.
+    `tab`;
+  - in a space on another machine (`spaces()[i].machine`), micro starts
+    with `hc run --on <machine>` (its address is `<machine>/tN`) and every
+    `exec` passes `{on: machine}`.
 - **`herdr-micro-pick`** (overlay popup 1×1): captures `focused()`, opens
   `herdr-micro` as a dialog with `{role: "pick", place}`, and closes itself.
 - **`herdr-micro-view`** (`place: none`, `focusable`): the viewer pane,
@@ -126,6 +134,10 @@ folder. It uses no network and edits no layout.
     ICO, HEIC and AVIF, to `mods/herdr-micro-view/.cache/<hash>/` and drawn
     with `image()`. PDFs are measured with `pdfinfo` and rendered with
     `pdftoppm -png -singlefile -scale-to-x 1600`.
+  - On another machine, the same programs run there and print base64
+    (`cat`, `magick … png:-`, `pdftoppm` to stdout, piped to `base64 -w0`).
+    The viewer decodes it with `Buffer.from(…, "base64")` and writes it with
+    `fs.writeFile`.
   - A cache folder is deleted when its viewer closes or the file changes;
     any left unused for 12 hours go too.
 
@@ -146,8 +158,12 @@ folder. It uses no network and edits no layout.
 - A mod can draw images only from inside the app home, hence the cache.
 - Every PDF page shows at the first page's aspect ratio. The page counter
   follows the keys, not mouse scrolling.
-- Local spaces only. Tested on Fedora (GNOME) with micro 2.0.15 and Herdr
-  app 0.1.13. `cmd` is the Super key on Linux, and GNOME takes Super+M,
+- Another machine's folder can't be watched (`watchFolder` is local only),
+  so a remote tree lists again every 3 s while its tab is on screen. A
+  remote file over 6 MB can't be shown or opened (`exec` output stops at
+  8 MiB).
+- Tested on Fedora (GNOME) with micro 2.0.15 and Herdr app 0.1.13, locally
+  and with a space on another Fedora machine. `cmd` is the Super key on Linux, and GNOME takes Super+M,
   hence ctrl-alt-m.
 
 ## Done when
@@ -167,3 +183,5 @@ folder. It uses no network and edits no layout.
 - Super+Shift+O lists the repo's files with changes first, typing narrows
   the list, and Enter opens the chosen file in micro.
 - Quitting micro closes the tree.
+- In a space on another machine, ctrl-alt-m starts micro there in the
+  space's repo, and a PNG from the tree shows in the viewer.

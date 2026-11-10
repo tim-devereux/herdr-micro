@@ -5,7 +5,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Input, InputState, Scrollbar, VirtualListScrollHandle, v_virtual_list } from "gpui-base";
 import { closeOverlay, exec, props, run, theme } from "herdr";
-import { microOf, openFile, openPair, shownPane, tabRoot, viewable, viewFile, viewPane } from "./micro.js";
+import { machineOf, microOf, openFile, openPair, shownPane, tabRoot, viewable, viewFile, viewPane } from "./micro.js";
 
 const LIST = `cd "$1" || exit 1
 { git ls-files -z -co --exclude-standard 2>/dev/null || find . -type f -not -path '*/.git/*' -printf '%P\\0'; } |
@@ -51,9 +51,10 @@ export class Pick {
 
   async load() {
     this.root = await tabRoot(this.f);
+    const on = machineOf(this.f.tab);
     const [all, st] = await Promise.all([
-      exec("sh", ["-c", LIST, "herdr-micro", this.root]).catch(() => null),
-      exec("git", ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=normal"], { cwd: this.root }).catch(() => null),
+      exec("sh", ["-c", LIST, "herdr-micro", this.root], { on }).catch(() => null),
+      exec("git", ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=normal"], { cwd: this.root, on }).catch(() => null),
     ]);
     const changed = new Map();
     const parts = (st?.code === 0 ? st.stdout : "").split("\0");

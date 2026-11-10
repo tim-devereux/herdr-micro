@@ -2,8 +2,11 @@
 // `herdr-micro.tab=<tab id>` (and `herdr-micro.root=<folder>`), shown in a
 // pane with the file tree pane on its right. Hiding parks micro (it keeps
 // running, buffers and all); showing gives it a pane again.
+//
+// Spaces on other machines work too: micro runs there (`hc run --on`), its
+// address is `<machine>/tN`, and every program runs there (`exec {on}`).
 
-import { exec, focused, hc, home, notify, panes, run, setShared, shared, spaces, terminals } from "herdr";
+import { exec, focused, hc, home, machines, notify, panes, run, setShared, shared, spaces, terminals } from "herdr";
 
 export const TAB = "herdr-micro.tab";
 export const ROOT = "herdr-micro.root";
@@ -42,10 +45,17 @@ export function pairShown(tab) {
   return Boolean((m && shownPane(m.address)) || treePane(tab) || viewPane(tab));
 }
 
-// The git repo a folder is in, else the folder (else home).
-export async function rootFor(cwd) {
-  const dir = cwd || home();
-  const r = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: dir }).catch(() => null);
+// The machine a tab lives on (null: this one).
+export function machineOf(tab) {
+  return spaces().find((s) => s.tabs.some((t) => t.id === tab))?.machine ?? null;
+}
+
+// The git repo a folder is in, else the folder (else that machine's home).
+export async function rootFor(cwd, on = null) {
+  let dir = cwd;
+  if (!dir && on) dir = (await exec("sh", ["-c", "pwd"], { on }).catch(() => null))?.stdout.trim();
+  dir = dir || home();
+  const r = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: dir, on }).catch(() => null);
   const top = r?.code === 0 ? r.stdout.trim() : "";
   return top || dir;
 }
@@ -58,7 +68,7 @@ export function tabCwd(f) {
 
 // The folder the tab's micro is rooted at, or the one it would be.
 export async function tabRoot(f) {
-  return microOf(f.tab)?.labels?.[ROOT] ?? (await rootFor(tabCwd(f)));
+  return microOf(f.tab)?.labels?.[ROOT] ?? (await rootFor(tabCwd(f), machineOf(f.tab)));
 }
 
 // `terminals()` and `panes()` follow commands a moment later: poll briefly.
@@ -90,11 +100,12 @@ export async function openFile(cx, address, path) {
 // `f`: the focused place, captured before any await.
 export async function openPair(cx, f, { file = null } = {}) {
   const tab = f.tab;
+  const on = machineOf(tab);
   let m = microOf(tab);
   let root = m?.labels?.[ROOT];
   if (!m) {
-    root = await rootFor(tabCwd(f));
-    const r = await hc(["run", "--bg", "--json", "--cwd", root,
+    root = await rootFor(tabCwd(f), on);
+    const r = await hc(["run", "--bg", "--json", ...(on ? ["--on", on] : []), "--cwd", root,
       "--label", `${TAB}=${tab}`, "--label", `${ROOT}=${root}`, "--", "micro"]).catch((e) => ({ stdout: "", stderr: String(e) }));
     let address = null;
     try { address = JSON.parse(r.stdout).address; } catch {}
@@ -105,7 +116,7 @@ export async function openPair(cx, f, { file = null } = {}) {
     m = (await waitFor(cx, () => microOf(tab))) ?? { address, labels: {} };
   }
   const address = m.address;
-  root = root ?? (await rootFor(tabCwd(f)));
+  root = root ?? (await rootFor(tabCwd(f), on));
   // The viewer stands in micro's place: back to micro first.
   if (viewPane(tab)) await backToMicro(cx, tab);
   if (!shownPane(address)) {
@@ -177,12 +188,16 @@ export function closePair(tab) {
 }
 
 // Ends micros whose tab is gone (a parked micro has no pane to close it).
+// Only on machines whose layout is known now: an offline machine's spaces
+// are missing, not gone.
 export async function sweep() {
   const all = spaces();
   if (!all.length) return;
+  const ready = new Set(machines().filter((m) => m.layout === "ready").map((m) => m.name ?? ""));
   const tabs = new Set(all.flatMap((s) => s.tabs.map((t) => t.id)));
   for (const t of terminals()) {
     const tab = t.labels?.[TAB];
-    if (live(t) && tab && !tabs.has(tab)) await hc(["kill", t.address]).catch(() => null);
+    const machine = t.address.includes("/") ? t.address.split("/")[0] : "";
+    if (live(t) && tab && !tabs.has(tab) && ready.has(machine)) await hc(["kill", t.address]).catch(() => null);
   }
 }

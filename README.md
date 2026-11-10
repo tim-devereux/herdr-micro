@@ -25,6 +25,7 @@ done
 
 Then add the bindings from `keys.json` to `~/.config/herdr-app/keys.json`.
 
-It needs `micro` and `git`. The viewer also needs `pdftoppm` and `pdfinfo`
+It needs `micro` and `git` (on each machine whose spaces use it: it works
+in remote spaces too). The viewer also needs `pdftoppm` and `pdfinfo`
 (poppler) and ImageMagick. See [RECIPE.md](RECIPE.md) for everything it
 does.

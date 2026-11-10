@@ -3,8 +3,8 @@
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, VirtualListScrollHandle, v_virtual_list } from "gpui-base";
-import { exec, nextCommand, props, run, theme, watchFolder } from "herdr";
-import { backToMicro, microOf, openFile, treePane, viewable, viewFile, viewPane } from "./micro.js";
+import { exec, nextCommand, props, run, spaces, theme, watchFolder } from "herdr";
+import { backToMicro, machineOf, microOf, openFile, treePane, viewable, viewFile, viewPane } from "./micro.js";
 
 const HINT = "j/k move · l open · h close · ⌫ up · . root · ~ home · H hidden · q micro";
 const dirname = (p) => p.replace(/\/[^/]*$/, "") || "/";
@@ -14,6 +14,7 @@ export class Tree {
   constructor(cx) {
     const p = props();
     this.tab = p.tab;
+    this.on = machineOf(p.tab); // null: this machine
     this.home = p.root;
     this.root = p.root;
     this.open = new Set();
@@ -32,9 +33,18 @@ export class Tree {
         if (c === "focus") { this.handle.focus(); cx.notify(); }
       }
     });
-    // Files changing under the root: list again.
+    // Files changing under the root: list again. Another machine's folder
+    // can't be watched: list it again every 3 s.
     cx.spawn(async (cx) => {
       while (!this.closed) {
+        if (this.on) {
+          await cx.sleep(3000);
+          if (this.closed) return;
+          if (!this.onScreen()) continue;
+          await this.reload();
+          cx.notify();
+          continue;
+        }
         const ok = await watchFolder(this.root).then(() => true, () => false);
         if (this.closed) return;
         if (!ok) await cx.sleep(5000);
@@ -58,8 +68,13 @@ export class Tree {
     this.closed = true;
   }
 
+  // This tree's tab is the one shown.
+  onScreen() {
+    return spaces().some((s) => s.active && s.tabs.some((t) => t.id === this.tab && t.active));
+  }
+
   async list(dir) {
-    const r = await exec("find", ["-L", dir, "-mindepth", "1", "-maxdepth", "1", "-printf", "%y\\t%f\\n"]).catch(() => null);
+    const r = await exec("find", ["-L", dir, "-mindepth", "1", "-maxdepth", "1", "-printf", "%y\\t%f\\n"], { on: this.on }).catch(() => null);
     const out = [];
     for (const line of (r?.stdout ?? "").split("\n")) {
       const tab = line.indexOf("\t");
@@ -79,11 +94,11 @@ export class Tree {
   }
 
   async git() {
-    const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: this.root }).catch(() => null);
+    const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: this.root, on: this.on }).catch(() => null);
     const marks = new Map();
     if (top?.code === 0) {
       const base = top.stdout.trim();
-      const r = await exec("git", ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=normal"], { cwd: base }).catch(() => null);
+      const r = await exec("git", ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=normal"], { cwd: base, on: this.on }).catch(() => null);
       const parts = (r?.stdout ?? "").split("\0");
       for (let i = 0; i < parts.length; i++) {
         const e = parts[i];

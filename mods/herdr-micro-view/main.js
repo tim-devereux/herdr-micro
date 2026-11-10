@@ -6,15 +6,22 @@
 // A mod can only draw images inside the app home, so the file is copied
 // (images) or rendered page by page with pdftoppm (PDFs) into this mod's
 // .cache folder. It reloads when the file changes.
+//
+// In a space on another machine the file is there: the programs run there
+// (`exec {on}`) and send the bytes back as base64 (at most ~6 MB each: exec
+// output stops at 8 MiB).
 
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, VirtualListScrollHandle, v_virtual_list } from "gpui-base";
-import { appHome, exec, focused, nextCommand, panes, props, run, shared, terminals, theme } from "herdr";
+import * as fs from "fs/promises";
+import { Buffer } from "buffer";
+import { appHome, exec, focused, nextCommand, panes, props, run, shared, spaces, terminals, theme } from "herdr";
 
 const VIEW = "herdr-micro.view";
 const MOD = "herdr-micro-view";
 const CACHE = `mods/${MOD}/.cache`;
 const CONVERT = new Set(["tif", "tiff", "bmp", "ico", "heic", "avif"]); // drawn from a PNG copy
+const MAX_FETCH = 6 * 1024 * 1024;
 const basename = (p) => p.split("/").pop();
 const extOf = (p) => (/\.([^./]+)$/.exec(p)?.[1] ?? "").toLowerCase();
 
@@ -31,6 +38,8 @@ const shownPane = (address) => panes().find((p) => p.terminal === address) ?? nu
 export default class HerdrMicroView extends View {
   init(_props, cx) {
     this.tab = props()?.tab;
+    // The tab's machine (null: this one).
+    this.on = spaces().find((s) => s.tabs.some((t) => t.id === this.tab))?.machine ?? null;
     this.file = null;
     this.mtime = null;
     this.state = null; // {kind: "image", src, w, h} | {kind: "pdf", pages, aspect, rel, done} | {error}
@@ -77,8 +86,24 @@ export default class HerdrMicroView extends View {
   }
 
   async stat() {
-    const r = await exec("stat", ["-L", "-c", "%Y", this.file]).catch(() => null);
+    const r = await exec("stat", ["-L", "-c", "%Y", this.file], { on: this.on }).catch(() => null);
     return r?.code === 0 ? r.stdout.trim() : null;
+  }
+
+  // Runs `script` (sh, $1.. = args) on the tab's machine; what it prints is
+  // base64, written to `out` as bytes. Resolves with null, or what went wrong.
+  async fetch(script, args, out) {
+    const r = await exec("sh", ["-c", `${script} | base64 -w0`, "herdr-micro", ...args], { on: this.on }).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (r.code !== 0 || !r.stdout) return (r.stderr || "Could not fetch the file.").trim();
+    await fs.writeFile(out, Buffer.from(r.stdout.trim(), "base64"));
+    return null;
+  }
+
+  // Whether the file is small enough to fetch from another machine.
+  async fits(file) {
+    const r = await exec("stat", ["-L", "-c", "%s", file], { on: this.on }).catch(() => null);
+    const size = Number(r?.stdout.trim() ?? 0);
+    return size <= MAX_FETCH ? null : `Too big to fetch from ${this.on} (${(size / 1048576).toFixed(1)} MB; at most 6 MB).`;
   }
 
   async load(cx) {
@@ -99,12 +124,20 @@ export default class HerdrMicroView extends View {
       const ext = extOf(file);
       if (ext === "pdf") return await this.loadPdf(cx, seq, file, rel, dir);
       let src = `${rel}/image.${ext}`;
-      const r = CONVERT.has(ext)
-        ? await exec("magick", [`${file}[0]`, `${dir}/image.png`]).then((r) => { src = `${rel}/image.png`; return r; })
-        : await exec("cp", [file, `${dir}/image.${ext}`]);
+      let error = null;
+      if (this.on) {
+        error = await this.fits(file);
+        if (!error && CONVERT.has(ext)) { src = `${rel}/image.png`; error = await this.fetch('magick "$1[0]" png:-', [file], `${appHome()}/${src}`); }
+        else if (!error) error = await this.fetch('cat "$1"', [file], `${appHome()}/${src}`);
+      } else {
+        const r = CONVERT.has(ext)
+          ? await exec("magick", [`${file}[0]`, `${dir}/image.png`]).then((r) => { src = `${rel}/image.png`; return r; })
+          : await exec("cp", [file, `${dir}/image.${ext}`]);
+        if (r.code !== 0) error = (r.stderr || "Could not read the image.").trim();
+      }
       if (seq !== this.loadSeq) return;
-      if (r.code !== 0) { this.state = { error: (r.stderr || "Could not read the image.").trim() }; return cx.notify(); }
-      const id = await exec("magick", ["identify", "-format", "%w %h\\n", `${file}[0]`]).catch(() => null);
+      if (error) { this.state = { error }; return cx.notify(); }
+      const id = await exec("magick", ["identify", "-format", "%w %h\\n", `${file}[0]`], { on: this.on }).catch(() => null);
       const [w, h] = (id?.stdout ?? "").trim().split(/\s+/).map(Number);
       if (seq !== this.loadSeq) return;
       this.state = { kind: "image", src, w: w || null, h: h || null };
@@ -115,7 +148,7 @@ export default class HerdrMicroView extends View {
   }
 
   async loadPdf(cx, seq, file, rel, dir) {
-    const info = await exec("pdfinfo", [file]).catch(() => null);
+    const info = await exec("pdfinfo", [file], { on: this.on }).catch(() => null);
     if (seq !== this.loadSeq) return;
     const pages = Number(/^Pages:\s+(\d+)/m.exec(info?.stdout ?? "")?.[1] ?? 0);
     const size = /^Page size:\s+([\d.]+) x ([\d.]+)/m.exec(info?.stdout ?? "");
@@ -132,8 +165,13 @@ export default class HerdrMicroView extends View {
       for (let i = this.page; i < Math.min(pages, this.page + 3); i++) if (!s.done.has(i)) { next = i; break; }
       if (next < 0) for (let i = 0; i < pages; i++) if (!s.done.has(i)) { next = i; break; }
       if (next < 0) return;
-      await exec("pdftoppm", ["-png", "-singlefile", "-f", `${next + 1}`, "-l", `${next + 1}`,
-        "-scale-to-x", "1600", "-scale-to-y", "-1", file, `${dir}/p${next + 1}`]).catch(() => null);
+      if (this.on) {
+        await this.fetch('pdftoppm -png -singlefile -f "$2" -l "$2" -scale-to-x 1600 -scale-to-y -1 "$1"',
+          [file, `${next + 1}`], `${dir}/p${next + 1}.png`).catch(() => null);
+      } else {
+        await exec("pdftoppm", ["-png", "-singlefile", "-f", `${next + 1}`, "-l", `${next + 1}`,
+          "-scale-to-x", "1600", "-scale-to-y", "-1", file, `${dir}/p${next + 1}`]).catch(() => null);
+      }
       if (seq !== this.loadSeq) return;
       s.done.add(next);
       cx.notify();
@@ -158,8 +196,18 @@ export default class HerdrMicroView extends View {
     });
   }
 
-  openExternal() {
-    if (this.file) exec("xdg-open", [this.file]).catch(() => null);
+  // The system's app for the file, here; one on another machine is fetched
+  // into the cache first.
+  openExternal(cx) {
+    const file = this.file, dir = this.dir;
+    if (!file) return;
+    if (!this.on) return void exec("xdg-open", [file]).catch(() => null);
+    if (!dir) return;
+    cx.spawn(async () => {
+      const copy = `${dir}/${basename(file)}`;
+      const error = (await this.fits(file)) ?? (await this.fetch('cat "$1"', [file], copy));
+      if (!error) await exec("xdg-open", [copy]).catch(() => null);
+    });
   }
 
   goPage(i, cx) {
@@ -180,7 +228,7 @@ export default class HerdrMicroView extends View {
       case "g": case "home": this.goPage(0, cx); break;
       case "G": case "end": this.goPage(Infinity, cx); break;
       case "z": this.actual = !this.actual; cx.notify(); break;
-      case "o": this.openExternal(); break;
+      case "o": this.openExternal(cx); break;
       default: return;
     }
     cx.stop_propagation();
@@ -241,7 +289,7 @@ export default class HerdrMicroView extends View {
         .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(this.file ? basename(this.file) : ""))
         .child(div().flex_none().text_size(11.5).text_color(t.dim).child(info))
         .when(s?.kind === "image" && Boolean(s.w), (el) => el.child(this.button("zoom", this.actual ? "Fit" : "100%", t, (cx) => { this.actual = !this.actual; cx.notify(); })))
-        .child(this.button("ext", "Open", t, () => this.openExternal()))
+        .child(this.button("ext", "Open", t, (cx) => this.openExternal(cx)))
         .child(this.button("back", "micro", t, (cx) => this.back(cx))))
       .child(body)
       .child(div().flex_none().px(10).py(5).border_t(1).border_color(t.border).bg(t.background).text_size(10.5).text_color(t.dim).truncate()
