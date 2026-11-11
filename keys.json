@@ -1,6 +1,7 @@
 {
   "global": {
     "ctrl-alt-m": "mod.open:herdr-micro",
-    "cmd-shift-o": "mod.open:herdr-micro-pick"
+    "cmd-shift-o": "mod.open:herdr-micro-pick",
+    "ctrl-alt-l": "mod.open:herdr-latex"
   }
 }

@@ -185,3 +185,110 @@ machine's files. The viewer fetches images and PDF pages from there, and
 - Quitting micro closes the tree.
 - In a space on another machine, ctrl-alt-m starts micro there in the
   space's repo, and a PNG from the tree shows in the viewer.
+
+---
+
+# herdr-latex (companion mod)
+
+A LaTeX pane between the tab's micro and its tree. `latexmk` rebuilds on
+every save, and the pane shows the PDF, the problems from the log, the
+outline and the word count. Clicking a problem or heading moves micro there,
+and **Fix with agent** sends the errors to the tab's agent.
+
+## What you see
+
+- A pane right of micro (left of herdr-micro's tree) with:
+  - a 34px header: "LaTeX", the main file (relative to the project, in
+    `dim`), then a status: a spinner (`mods/workspace-chrome/spinner.svg`)
+    and "Building" in `working`, "N errors" in `ansi1`, "Built · N warnings"
+    in `blocked`, or "Built" in `ansi2`;
+  - then the page count ("3 p"), and pill buttons: **Fix with agent**
+    (`accent`, only when there are errors or undefined references),
+    **Build** (**Restart** once latexmk stops), **Hide panel**/**Panel**;
+  - the PDF as white pages at the pane's width, 12px apart, in a virtual
+    list with a scrollbar;
+  - a 220px panel with tabs **Problems N** and **Outline** (2px `accent`
+    underline on the open one), a "N bad boxes" toggle, and the word count
+    on the right. Problem rows are 24px: ✕ in `ansi1` (error), ! in
+    `blocked` (warning), · in `dim` (bad box), the message, then
+    `file:line` in `dim`. Outline rows are indented 14px per level;
+  - a footer with the keys.
+- With several `\documentclass` files and none chosen, a list to pick the
+  main one.
+
+## How it behaves
+
+- **ctrl-alt-l** (`mod.open:herdr-latex`) toggles the pane for the focused
+  tab. With no micro shown, it presses herdr-micro's toggle first and waits
+  for micro and its tree. Closing the pane (the key, or the pane's ✕) stops
+  latexmk.
+- **Main file**: a `.tex` with `\documentclass` up to 3 folders deep in the
+  project (herdr-micro's root, else the tab's git repo). It prefers the one
+  latexmk already runs, then the tab's last choice, then the only one, then
+  `main`/`thesis`/`paper`/`report.tex`. Otherwise it asks; `m` or a click on
+  the name asks again.
+- **Builds**: `latexmk -pdf -pvc -view=none -interaction=nonstopmode
+  -file-line-error -synctex=1 <main>` runs in the main file's folder, in a
+  hidden core terminal labelled `herdr-latex.tab=<tab>`. It rebuilds
+  whenever a source changes. **Build** or `r` touches the main file.
+  - The status comes from the last 40 lines of latexmk's output: after
+    "Running '…'" or "Reasons for rerun" it's building; after "Watching for
+    updated files" it's done.
+  - The pane checks every 1.2 s while its tab is on screen (3 s otherwise).
+    The log is read again when it changes, the PDF is drawn again when it
+    changes, and the outline is read again after each build.
+- **PDF**: pages render at 1600px with `pdftoppm`, the visible ones first.
+  The previous build's pages stay until the new ones are drawn. Keys:
+  `j`/`n`/↓/Space next page, `k`/`p`/↑ previous, `g`/`G` first/last.
+- **Problems**: `file:line: message` errors, other `!` errors (no line),
+  LaTeX/Package/Class warnings with "on input line N", and bad boxes
+  (hidden until the toggle). Click one: if micro's status line doesn't
+  already show that file, `open '<file>'`, then `goto <line>`; micro takes
+  the keyboard.
+- **Outline**: `\part` … `\paragraph` (starred and `[short]` forms too) in
+  the main file and in `\input`/`\include`/`\subfile` files, 3 deep.
+  Comments are skipped. Click a heading to jump.
+- **Word count**: `pdftotext | wc -w` on the PDF.
+- **Fix with agent**: sends the errors and undefined references (40 at
+  most) as `- file:line: message` to the tab's focused agent, else its
+  first one, with `hc send`. A toast says how many were sent.
+- In a space on another machine, latexmk, `pdftoppm`, `pdfinfo` and
+  `pdftotext` run there. Pages come back as base64, and logs and sources
+  are read with `readTextFile {on}`.
+
+## Built from
+
+- `herdr-latex` (`place: none`, `focusable`, overlay popup 1×1, no frame):
+  an overlay (the toggle) or a pane with props `{tab}`. `pane.js` is the
+  pane, `pdf.js` the page renderer, `parse.js` the log parser and outline,
+  and `util.js` holds the machine/micro helpers.
+- It finds herdr-micro's micro by its `herdr-micro.tab` label and root by
+  `herdr-micro.root`. It moves micro with `hc keys` (Esc, Ctrl-E, 120 ms
+  apart) and `hc send --force` (`open '<file>'`, `goto <line>`).
+- Shared `"herdr-latex.main"` (`{[tab]: main}`) remembers the main file.
+  Pages are cached in `mods/herdr-latex/.cache/<tab hash>/<build hash>/`,
+  removed when the pane closes.
+
+## Watch out
+
+- Fedora's minimal TeX Live has no Type 1 fonts: pdflatex then fails with
+  "cannot open Type 1 font file" and writes no PDF. Install
+  `texlive-collection-fontsrecommended` (and `-latexrecommended`).
+- latexmk 4.8x prints "Running '…'", not "Run number", while it builds.
+- With nonstopmode, latexmk still writes a PDF despite errors, and waits for
+  a source change before trying again.
+- Every page shows at the first page's aspect ratio. The page count in the
+  header is the document's, not the page on screen.
+- There's no SyncTeX jump yet. `-synctex=1` writes the data for one.
+
+## Done when
+
+- `herdr-app check mods/herdr-latex` passes.
+- ctrl-alt-l in a tab of a LaTeX project opens micro, the tree and the
+  LaTeX pane, and latexmk starts (a terminal labelled `herdr-latex.tab`).
+- A document with `\badcommand` on line 7 and an undefined `\cite` on line
+  4 shows "1 error", Problems lists `main.tex:7` and `main.tex:4`, and the
+  PDF shows.
+- Saving the file in micro rebuilds it: "Building", then the new PDF.
+- Clicking the error puts micro on line 7.
+- ctrl-alt-l again closes the pane and stops latexmk.
